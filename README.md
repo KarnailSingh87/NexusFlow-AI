@@ -102,6 +102,17 @@ for billing.
 
 ---
 
+## Screenshots
+
+<!-- Replace these placeholders with real captures before submission. -->
+
+| View | Capture |
+|---|---|
+| Architecture overview | ![Architecture](docs/screenshots/architecture.png) |
+| Streaming playground | ![Playground](docs/screenshots/playground.png) |
+| Agentic copilot trace | ![Copilot](docs/screenshots/copilot.png) |
+| Dashboard & jobs | ![Dashboard](docs/screenshots/dashboard.png) |
+
 ## Architecture
 
 The full request path from browser to GPU, and back.
@@ -588,6 +599,21 @@ schema at `/openapi.json`.
 | `POST` | `/api/v1/chat/completions` | Buffered completion. |
 | `POST` | `/api/v1/chat/completions/stream` | SSE stream, OpenAI frame format. |
 | `POST` | `/api/v1/chat/embeddings` | Text embeddings. |
+| `POST` | `/api/v1/agent/run` | Autonomous copilot loop. SSE stream of plan, thought trace, tool calls, and final answer. |
+
+### Autonomous copilot run
+
+`POST /api/v1/agent/run` accepts `{"goal": str, "document_text": str, "max_steps": int}`
+and streams `text/event-stream` frames (`plan_created`, `step_started`, `thought`,
+`tool_result`, `step_completed`, `plan_updated`, `final_answer`, `run_failed`).
+Each step routes to a Nemotron model chosen by `AIService`'s task routing —
+Nano for summarisation/extraction, Ultra for auditing, Lightning for drafting.
+
+```bash
+curl -N http://localhost:8000/api/v1/agent/run \
+  -H 'Content-Type: application/json' \
+  -d '{"goal": "Audit this vendor contract and draft an approval sign-off"}'
+```
 
 ### Non-streaming completion
 

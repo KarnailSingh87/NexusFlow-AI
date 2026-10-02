@@ -1,5 +1,5 @@
-import { CopilotPanel } from '@/components/copilot/CopilotPanel'
+import { CopilotChat } from '@/components/copilot/CopilotChat'
 
 export default function CopilotPage() {
-  return <CopilotPanel />
+  return <CopilotChat />
 }

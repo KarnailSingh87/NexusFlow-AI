@@ -10,6 +10,13 @@ sees.
 The loop is deliberately transport-agnostic: it exposes
 :meth:`AgentOrchestrator.run` as an async iterator of events. The API layer
 serialises those onto SSE; tests iterate them directly.
+
+Every model call inside the loop goes through the shared NebiusClient, which
+talks to the same Nebius Token Factory endpoints as direct completions — so the
+agent inherits the pinned ``/v1`` base URL, ``Bearer`` auth, backoff/retry
+policy, and typed error hierarchy with no second client to drift out of sync.
+Long-running document steps are the same contract as Nebius Serverless Jobs:
+the HTTP request only submits and streams; the queue worker drains the rest.
 """
 
 from __future__ import annotations

@@ -41,4 +41,6 @@ export const apiRoutes = {
   completions: '/api/v1/chat/completions',
   completionsStream: '/api/v1/chat/completions/stream',
   embeddings: '/api/v1/chat/embeddings',
+  jobs: '/api/v1/jobs',
+  documents: '/api/v1/documents',
 } as const
