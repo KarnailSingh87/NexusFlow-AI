@@ -118,6 +118,13 @@ class Settings(BaseSettings):
         default="nvidia/Nemotron-3-Ultra-550b-a55b", alias="NEMOTRON_FRONTIER_MODEL"
     )
     nemotron_default_model: str | None = Field(default=None, alias="NEMOTRON_DEFAULT_MODEL")
+    #: Cheap 30B MoE used for high-volume structured work (summaries, entity
+    #: extraction, UI-bound classification). Distinct from ``nemotron_fast_model``:
+    #: Lightning is the general interactive default, Nano is the cost-optimised
+    #: route for cheap, frequent, output-schema-bound tasks.
+    nemotron_nano_model: str = Field(
+        default="nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B", alias="NEMOTRON_NANO_MODEL"
+    )
     nemotron_embedding_model: str = Field(
         default="Qwen/Qwen3-Embedding-8B", alias="NEMOTRON_EMBEDDING_MODEL"
     )

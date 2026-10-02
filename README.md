@@ -138,6 +138,10 @@ The full request path from browser to GPU, and back.
   │  Bearer auth · jittered retry · 429/5xx backoff                          │
   │  key never logged                                                        │
   │                                                                          │
+  │app/services/ai_service.py                                                │
+  │  task → Nemotron route (Nano · Lightning · Super · Ultra)                │
+  │  JSON mode: request + verify + repair                                    │
+  │                                                                          │
   │               ┌──────────────────────────────────────────────────────┐   │
   │               │  PostgreSQL 17   SQLAlchemy 2.0 async · asyncpg      │   │
   │               │  runs · steps · documents · jobs · Alembic           │   │
@@ -243,9 +247,11 @@ nexusflow/
 │       │   └── models.py      User · UserSession · Document · DocumentChunk
 │       │                      Workflow · WorkflowRun · WorkflowStep · BackgroundJob
 │       ├── schemas/           request/response contracts
-│       ├── services/nebius/
-│       │   ├── client.py      async Token Factory client (retry, SSE, embed)
-│       │   └── registry.py    curated Nemotron catalogue
+│       ├── services/
+│       │   ├── ai_service.py   task → Nemotron model routing, JSON-mode contract
+│       │   └── nebius/
+│       │       ├── client.py  async Token Factory client (retry, SSE, embed)
+│       │       └── registry.py curated Nemotron catalogue
 │       └── api/
 │           ├── deps.py        DI wiring
 │           └── v1/endpoints/  health · models · chat
@@ -453,6 +459,7 @@ Three environment templates exist, one per context:
 | `SECRET_KEY` | backend | placeholder | Signs tokens. Must be ≥32 chars in production. |
 | `CORS_ORIGINS` | backend | `localhost:3000` | Browser origins allowed to call the API. |
 | `NEMOTRON_DEFAULT_MODEL` | backend | `nvidia/Nemotron-3_5-Lightning` | Model used when a request omits `model`. |
+| `NEMOTRON_NANO_MODEL` | backend | `nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B` | Cheap route for summaries, entity extraction, and classification. |
 | `MODEL_ALLOWLIST` | backend | *(empty)* | Restrict invokable model IDs. Empty = anything your key reaches. |
 | `NEXT_PUBLIC_API_BASE_URL` | frontend | `http://localhost:8000` | API origin **as the browser sees it**. |
 | `INTERNAL_API_BASE_URL` | frontend | `http://localhost:8000` | API origin **as the Next.js server sees it** (`http://backend:8000` in Compose). |
@@ -487,6 +494,47 @@ boot** unless:
 
 The failure is explicit, listing every problem at once, rather than a
 cryptic runtime error later.
+
+---
+
+## Model Routing
+
+`app/services/ai_service.py` decides *which* NVIDIA Nemotron model answers a
+request, so call sites never hard-code a model ID. It sits above
+`NebiusClient`, which already owns the pinned `/v1` base URL, `Bearer` auth,
+backoff and `Retry-After` handling — re-implementing any of that per call site
+would produce a second, divergent retry policy.
+
+| Task | Route | Why |
+|---|---|---|
+| `summarize`, `extract_entities`, `classify` | Nemotron 3 **Nano** | Cheap, high-volume, schema-bound; a reasoning tier adds cost for no gain. |
+| `draft` | Nemotron 3.5 **Lightning** | Interactive latency over depth. |
+| `code`, `reason` | Nemotron 3 **Super** | Multi-step reasoning at moderate cost. |
+| `deep_audit` | Nemotron 3 **Ultra** | Explicitly the hard case; reliability over cost. |
+| `embed` | Qwen3 **Embedding 8B** | Dedicated encoder, not a chat model. |
+| `chat` | configured default | No routing opinion applied. |
+
+```python
+from app.services.ai_service import get_nemotron_client
+
+# Routes to Ultra, returns a parsed object, and records token usage.
+audit = await get_nemotron_client("deep_audit").deep_audit(payment_service)
+```
+
+Task names are matched case- and separator-insensitively, so `"deep_audit"`,
+`"DEEP-AUDIT"` and `"Deep Audit"` all resolve. An unrecognised task raises
+`UnknownTaskError` rather than silently promoting the request to a frontier
+model. Every route carries a `rationale`, and `explain_routing()` returns the
+whole table with resolved model IDs for diagnostics.
+
+### Structured output
+
+`chat_json()` requests `response_format={"type": "json_object"}` **and then
+verifies the reply parses**. That distinction matters: Nemotron 3 Nano and Ultra
+are reasoning models, so they may emit a reasoning trace, wrap the object in a
+```json fence, or precede it with prose. The extractor handles all three; if
+parsing still fails the bad output is fed back as a correction and the call is
+retried once before raising `StructuredOutputError`.
 
 ---
 

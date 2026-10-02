@@ -224,3 +224,26 @@ def test_configure_logging_is_idempotent() -> None:
     configure_logging()
 
     assert len(logging.getLogger().handlers) == 1
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "ai task=summarize tier=fast model=nvidia/Nano total=128 latency_ms=41",
+        "prompt=37 completion=5 cached=0 total=42",
+    ],
+)
+def test_token_counts_survive_redaction(line: str) -> None:
+    """Counting must not look like credentialing.
+
+    The redactor masks any ``*token*=`` assignment, so a log field literally named
+    ``tokens=42`` is scrubbed and the count silently disappears — which defeats
+    the point of logging token consumption in the first place. Field names for
+    counts therefore avoid the substring entirely.
+    """
+    assert redact(line) == line
+
+
+def test_token_counts_would_be_redacted_if_named_tokens() -> None:
+    """Documents the collision that the naming convention above exists to avoid."""
+    assert "42" not in redact("tokens=42")

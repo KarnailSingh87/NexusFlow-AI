@@ -30,6 +30,10 @@ const DIAGRAM = `
   │  Bearer auth · jittered retry · 429/5xx backoff                          │
   │  key never logged                                                        │
   │                                                                          │
+  │app/services/ai_service.py                                                │
+  │  task → Nemotron route (Nano · Lightning · Super · Ultra)                │
+  │  JSON mode: request + verify + repair                                    │
+  │                                                                          │
   │               ┌──────────────────────────────────────────────────────┐   │
   │               │  PostgreSQL 17   SQLAlchemy 2.0 async · asyncpg      │   │
   │               │  runs · steps · documents · jobs · Alembic           │   │

@@ -143,6 +143,10 @@ API_ROWS = [
     "app/services/nebius/client.py",
     "  Bearer auth · jittered retry · 429/5xx backoff",
     "  key never logged",
+    "",
+    "app/services/ai_service.py",
+    "  task → Nemotron route (Nano · Lightning · Super · Ultra)",
+    "  JSON mode: request + verify + repair",
 ]
 
 
