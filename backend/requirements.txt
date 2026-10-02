@@ -1,0 +1,27 @@
+# ---------------------------------------------------------------------------
+# NexusFlow AI — backend runtime dependencies
+# Pinned for reproducible builds. Regenerate with `pip freeze` when upgrading.
+# Target runtime: Python 3.11+ (see pyproject.toml / Dockerfile)
+# ---------------------------------------------------------------------------
+
+# --- Web framework -------------------------------------------------------
+fastapi==0.142.2
+uvicorn[standard]==0.54.0
+python-multipart==0.0.32
+
+# --- Settings & validation ------------------------------------------------
+pydantic==2.13.5
+pydantic-settings==2.15.0
+email-validator==2.3.0
+
+# --- Nebius Token Factory client -----------------------------------------
+httpx==0.28.1
+
+# --- Persistence ----------------------------------------------------------
+sqlalchemy[asyncio]==2.1.2
+asyncpg==0.31.0
+alembic==1.20.0
+
+# --- Auth primitives ------------------------------------------------------
+python-jose[cryptography]==3.5.0
+bcrypt==5.0.0

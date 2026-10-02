@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="NexusFlow AI">
+  <rect width="64" height="64" rx="14" fill="#4f46e5" />
+  <path
+    d="M18 46V18h5.6l17 19.6V18H46v28h-5.6l-17-19.6V46z"
+    fill="#ffffff"
+  />
+</svg>

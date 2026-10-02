@@ -1,0 +1,87 @@
+@import 'tailwindcss';
+
+/*
+ * Tailwind CSS v4 design tokens. Declared with @theme so utilities such as
+ * `bg-surface` / `text-ink-muted` are generated on demand.
+ */
+@theme {
+  --color-ink: oklch(0.98 0.005 265);
+  --color-ink-muted: oklch(0.72 0.02 265);
+  --color-canvas: oklch(0.16 0.015 265);
+  --color-surface: oklch(0.21 0.02 265);
+  --color-surface-raised: oklch(0.26 0.022 265);
+  --color-edge: oklch(0.32 0.02 265);
+  --color-brand: oklch(0.72 0.17 265);
+  --color-brand-strong: oklch(0.63 0.19 265);
+  --color-ok: oklch(0.76 0.17 155);
+  --color-warn: oklch(0.8 0.15 85);
+  --color-danger: oklch(0.68 0.2 25);
+
+  --font-sans: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --font-mono: ui-monospace, 'SF Mono', 'JetBrains Mono', monospace;
+}
+
+html,
+body {
+  height: 100%;
+}
+
+body {
+  background-color: var(--color-canvas);
+  color: var(--color-ink);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+}
+
+@layer components {
+  .card {
+    border: 1px solid var(--color-edge);
+    border-radius: 0.75rem;
+    background-color: var(--color-surface);
+    padding: 1.25rem;
+  }
+
+  .btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5rem;
+    border-radius: 0.5rem;
+    border: 1px solid var(--color-edge);
+    background-color: var(--color-surface-raised);
+    padding: 0.5rem 0.9rem;
+    font-size: 0.875rem;
+    font-weight: 500;
+    cursor: pointer;
+    transition: background-color 120ms ease, border-color 120ms ease;
+  }
+
+  .btn:hover:not(:disabled) {
+    border-color: var(--color-brand);
+  }
+
+  .btn:disabled {
+    cursor: not-allowed;
+    opacity: 0.5;
+  }
+
+  .btn-primary {
+    background-color: var(--color-brand-strong);
+    border-color: var(--color-brand-strong);
+    color: white;
+  }
+
+  .field {
+    width: 100%;
+    border-radius: 0.5rem;
+    border: 1px solid var(--color-edge);
+    background-color: var(--color-canvas);
+    padding: 0.6rem 0.75rem;
+    font-size: 0.875rem;
+    color: inherit;
+    outline: none;
+  }
+
+  .field:focus {
+    border-color: var(--color-brand);
+  }
+}
