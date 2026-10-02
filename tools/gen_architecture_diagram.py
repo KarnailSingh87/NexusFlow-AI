@@ -122,14 +122,15 @@ NEMOTRON_ROWS = [
 
 PG_ROWS = [
     "  PostgreSQL 17   SQLAlchemy 2.0 async · asyncpg",
-    "  workflows · runs · ledger   Alembic migrations",
+    "  runs · steps · documents · jobs · Alembic",
 ]
 
 API_ROWS = [
     "app/main.py",
     "  ├── request-id middleware + redacting logger",
     "  ├── CORS, uniform errors → { error, request_id }",
-    "  └── lifespan: shared httpx pool, migrations on boot",
+    "  ├── lifespan: pool warm-up on boot · dispose on exit",
+    "  └── request lifecycle + token counters",
     "",
     "GET  /health                      liveness (no I/O)",
     "GET  /health/ready                DB + provider probe",

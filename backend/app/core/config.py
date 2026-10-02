@@ -8,10 +8,16 @@ from __future__ import annotations
 
 import json
 from functools import lru_cache
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
 from pydantic import Field, SecretStr, field_validator, model_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
+
+#: Comma-separated environment variables (``MODEL_ALLOWLIST=a,b``) are not valid
+#: JSON, and pydantic-settings would reject them while decoding the env source —
+#: before ``_split_csv_or_json`` ever runs. ``NoDecode`` hands the raw string to the
+#: validator, which then accepts JSON arrays *and* CSV, matching ``.env.example``.
+CsvList = Annotated[list[str], NoDecode]
 
 # Placeholders that must never reach production.
 _PLACEHOLDER_SECRETS = frozenset(
@@ -51,6 +57,7 @@ class Settings(BaseSettings):
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] = Field(
         default="INFO", alias="LOG_LEVEL"
     )
+    log_format: Literal["text", "json"] = Field(default="text", alias="LOG_FORMAT")
     api_v1_prefix: str = Field(default="/api/v1", alias="API_V1_PREFIX")
     docs_enabled: bool = Field(default=True, alias="DOCS_ENABLED")
 
@@ -74,6 +81,18 @@ class Settings(BaseSettings):
     db_pool_size: int = Field(default=10, alias="DB_POOL_SIZE")
     db_max_overflow: int = Field(default=20, alias="DB_MAX_OVERFLOW")
     db_echo: bool = Field(default=False, alias="DB_ECHO")
+    #: Seconds after which a pooled connection is recycled. Stays below the
+    #: typical 5-minute idle timeout enforced by pgbouncer and cloud proxies.
+    db_pool_recycle_seconds: int = Field(default=1800, alias="DB_POOL_RECYCLE_SECONDS")
+    #: Seconds a connection may sit idle before ``pool_pre_ping`` discards it,
+    #: which is how the app survives a database restart mid-flight.
+    db_pool_pre_ping: bool = Field(default=True, alias="DB_POOL_PRE_PING")
+    #: Connection attempts made during start-up pool warm-up.
+    db_connect_retries: int = Field(default=5, alias="DB_CONNECT_RETRIES")
+    #: Delay between those attempts, in seconds.
+    db_connect_backoff_seconds: float = Field(default=1.0, alias="DB_CONNECT_BACKOFF_SECONDS")
+    #: When false, a database that never becomes reachable does not stop boot.
+    db_fail_fast: bool = Field(default=False, alias="DB_FAIL_FAST")
 
     # ------------------------------------------------------------------
     # Nebius Token Factory
@@ -104,7 +123,7 @@ class Settings(BaseSettings):
     )
     # Allow-lists keep arbitrary client-supplied model IDs from reaching the
     # upstream provider by accident.
-    model_allowlist: list[str] = Field(default_factory=list, alias="MODEL_ALLOWLIST")
+    model_allowlist: CsvList = Field(default_factory=list, alias="MODEL_ALLOWLIST")
 
     # ------------------------------------------------------------------
     # Generation defaults
@@ -117,7 +136,7 @@ class Settings(BaseSettings):
     # ------------------------------------------------------------------
     # CORS
     # ------------------------------------------------------------------
-    cors_origins: list[str] = Field(
+    cors_origins: CsvList = Field(
         default_factory=lambda: [
             "http://localhost:3000",
             "http://127.0.0.1:3000",

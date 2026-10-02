@@ -7,7 +7,6 @@ Factory, and owns persistence plus request lifecycle concerns.
 from __future__ import annotations
 
 import time
-import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from typing import Any
@@ -21,8 +20,9 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from app.api.v1.endpoints import health
 from app.api.v1.router import api_router
 from app.core.config import settings
-from app.core.logging import configure_logging, get_logger
-from app.db.session import dispose_engine
+from app.core.logging import configure_logging, get_logger, request_scope
+from app.core.metrics import metrics
+from app.db.session import dispose_engine, pool_status, warmup_pool
 from app.services.nebius import NebiusClient, NebiusConfigurationError, NebiusError
 
 configure_logging()
@@ -33,7 +33,12 @@ REQUEST_ID_HEADER = "X-Request-ID"
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-    """Start-up / shut-down lifecycle."""
+    """Start-up / shut-down lifecycle.
+
+    Opening the database pool here keeps the first user request off the
+    connection handshake; the matching ``dispose_engine`` on the way out returns
+    every pooled socket to the OS so a rolling restart does not leak them.
+    """
     logger.info(
         "starting %s v%s (env=%s) base_url=%s default_model=%s",
         settings.app_name,
@@ -42,6 +47,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         settings.nebius_base_url,
         settings.nemotron_default_model,
     )
+
+    # Returns False and logs a warning instead of raising unless DB_FAIL_FAST is
+    # set; /health/ready probes the database live, so no boot-time flag is stored.
+    await warmup_pool()
 
     nebius_client: NebiusClient | None = None
     try:
@@ -58,6 +67,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     finally:
         if nebius_client is not None:
             await nebius_client.aclose()
+        logger.info("database pool before shutdown: %s", pool_status())
         await dispose_engine()
         logger.info("shutdown complete")
 
@@ -93,24 +103,55 @@ def create_app() -> FastAPI:
     async def request_context(
         request: Request, call_next: Callable[[Request], Awaitable[Any]]
     ) -> Any:
-        request_id = request.headers.get(REQUEST_ID_HEADER) or uuid.uuid4().hex
-        request.state.request_id = request_id
-        started = time.perf_counter()
+        """Correlate, time, and account for every inbound request.
 
-        response = await call_next(request)
+        Also the single place the metrics registry learns about traffic: a request
+        that dies before producing a response is still counted as a 5xx.
+        """
+        with request_scope(request.headers.get(REQUEST_ID_HEADER)) as request_id:
+            request.state.request_id = request_id
+            started = time.perf_counter()
+            metrics.request_started()
 
-        elapsed_ms = (time.perf_counter() - started) * 1000
-        response.headers[REQUEST_ID_HEADER] = request_id
-        response.headers["X-Process-Time-Ms"] = f"{elapsed_ms:.2f}"
-        logger.info(
-            "%s %s -> %s in %.1fms [request_id=%s]",
-            request.method,
-            request.url.path,
-            response.status_code,
-            elapsed_ms,
-            request_id,
-        )
-        return response
+            try:
+                response = await call_next(request)
+            except Exception:
+                elapsed_ms = (time.perf_counter() - started) * 1000
+                metrics.request_finished(
+                    route=request.url.path, status_code=500, latency_ms=elapsed_ms
+                )
+                logger.exception(
+                    "%s %s raised after %.1fms [request_id=%s]",
+                    request.method,
+                    request.url.path,
+                    elapsed_ms,
+                    request_id,
+                )
+                raise
+
+            elapsed_ms = (time.perf_counter() - started) * 1000
+            response.headers[REQUEST_ID_HEADER] = request_id
+            response.headers["X-Process-Time-Ms"] = f"{elapsed_ms:.2f}"
+
+            # Metric labels use the matched route template ("/documents/{id}") so a
+            # hot document cannot explode metric cardinality; unmatched requests fall
+            # back to the raw path. Logs keep the full path the client actually hit.
+            route = request.scope.get("route")
+            route_label = getattr(route, "path", None) or request.url.path
+            metrics.request_finished(
+                route=route_label, status_code=response.status_code, latency_ms=elapsed_ms
+            )
+
+            log = logger.warning if response.status_code >= 500 else logger.info
+            log(
+                "%s %s -> %s in %.1fms [request_id=%s]",
+                request.method,
+                request.url.path,
+                response.status_code,
+                elapsed_ms,
+                request_id,
+            )
+            return response
 
     # -- error handlers ----------------------------------------------------
     @app.exception_handler(NebiusError)

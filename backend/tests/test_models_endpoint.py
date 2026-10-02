@@ -27,15 +27,22 @@ async def test_catalog_is_served_without_a_provider_call(
 
 
 async def test_models_falls_back_to_curated_when_provider_fails(
-    client: httpx.AsyncClient,
+    client: httpx.AsyncClient, override_nebius
 ) -> None:
-    response = await client.get("/api/v1/models")
+    from tests.conftest import build_mock_client
+
+    # A 500 from the provider must degrade to the bundled catalogue rather than
+    # surface an error, so the UI always has something to render.
+    nebius, http = build_mock_client(lambda _r: httpx.Response(500, json={"error": "boom"}))
+    override_nebius(nebius)
+    try:
+        response = await client.get("/api/v1/models")
+    finally:
+        await http.aclose()
 
     assert response.status_code == 200
     body = response.json()
-    # Either the live inventory was proxied or the curated fallback was used;
-    # both must contain the default Nemotron model.
-    assert body["source"] in ("live", "curated")
+    assert body["source"] == "curated"
     assert body["default_model"] == "nvidia/nemotron-3-super-120b-a12b"
     assert body["data"][0]["id"] == body["default_model"]
 

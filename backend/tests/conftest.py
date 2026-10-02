@@ -23,6 +23,11 @@ os.environ.setdefault(
 )
 os.environ.setdefault("SECRET_KEY", "test-secret-key-only-for-local-tests-0123456789")
 os.environ.setdefault("NEBIUS_MAX_RETRIES", "1")
+# The suite never talks to a database, so the start-up pool warm-up must fail
+# fast instead of retrying: a single attempt against the unreachable local DSN
+# fails immediately, and `DB_FAIL_FAST=false` keeps the boot non-fatal.
+os.environ.setdefault("DB_CONNECT_RETRIES", "1")
+os.environ.setdefault("DB_CONNECT_BACKOFF_SECONDS", "0")
 
 from app.api.deps import get_nebius_client
 from app.core.config import Settings, get_settings
@@ -41,6 +46,11 @@ def app() -> FastAPI:
 @pytest.fixture
 async def client(app: FastAPI) -> AsyncIterator[httpx.AsyncClient]:
     """In-process ASGI client — no socket bound, no network egress.
+
+    Deliberately function-scoped: entering the lifespan per test keeps every
+    request on the same event loop as its start-up and shut-down, which is what
+    lets the shared provider client's connection pool be closed on the loop that
+    opened it. Broader scopes outlive their event loop and fail at teardown.
 
     ``ASGITransport`` does not fire lifespan events, so we enter the app's
     lifespan explicitly; otherwise ``app.state.nebius_client`` would never be

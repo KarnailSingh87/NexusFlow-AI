@@ -123,7 +123,8 @@ The full request path from browser to GPU, and back.
   │app/main.py                                                               │
   │  ├── request-id middleware + redacting logger                            │
   │  ├── CORS, uniform errors → { error, request_id }                        │
-  │  └── lifespan: shared httpx pool, migrations on boot                     │
+  │  ├── lifespan: pool warm-up on boot · dispose on exit                    │
+  │  └── request lifecycle + token counters                                  │
   │                                                                          │
   │GET  /health                      liveness (no I/O)                       │
   │GET  /health/ready                DB + provider probe                     │
@@ -139,7 +140,7 @@ The full request path from browser to GPU, and back.
   │                                                                          │
   │               ┌──────────────────────────────────────────────────────┐   │
   │               │  PostgreSQL 17   SQLAlchemy 2.0 async · asyncpg      │   │
-  │               │  workflows · runs · ledger   Alembic migrations      │   │
+  │               │  runs · steps · documents · jobs · Alembic           │   │
   │               └──────────────────────────────────────────────────────┘   │
   └────────────────────────────────┬─────────────────────────────────────────┘
                                    │  HTTPS · Bearer $NEBIUS_API_KEY
@@ -228,17 +229,19 @@ nexusflow/
 │   ├── alembic.ini
 │   ├── alembic/
 │   │   ├── env.py             async engine, DATABASE_URL from settings
-│   │   └── versions/          0001_initial
+│   │   └── versions/          0001_initial · 0002_documents_jobs
 │   ├── .env.example
 │   └── app/
 │       ├── main.py            app factory, middleware, exception handlers
 │       ├── core/
 │       │   ├── config.py      pydantic-settings + production safety rails
-│       │   └── logging.py     JSON-ish logging with secret redaction
+│       │   ├── logging.py     text/JSON logging with secret redaction
+│       │   └── metrics.py     request lifecycle + token consumption counters
 │       ├── db/
 │       │   ├── base.py        declarative base, UUID + timestamp mixins
-│       │   ├── session.py     async engine, session dependency
-│       │   └── models.py      User · Workflow · WorkflowRun
+│       │   ├── session.py     async engine, pool warm-up, session dependency
+│       │   └── models.py      User · UserSession · Document · DocumentChunk
+│       │                      Workflow · WorkflowRun · WorkflowStep · BackgroundJob
 │       ├── schemas/           request/response contracts
 │       ├── services/nebius/
 │       │   ├── client.py      async Token Factory client (retry, SSE, embed)
@@ -246,7 +249,7 @@ nexusflow/
 │       └── api/
 │           ├── deps.py        DI wiring
 │           └── v1/endpoints/  health · models · chat
-│   └── tests/                 53 tests, no network or database required
+│   └── tests/                 pytest suite, no network or database required
 │
 └── frontend/                  ← Next.js 16 App Router
     ├── Dockerfile             3-stage standalone build
@@ -457,6 +460,22 @@ Three environment templates exist, one per context:
 
 Every variable is documented inline in the `.env.example` files — start there.
 
+### Connection pool and logging
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `DB_POOL_RECYCLE_SECONDS` | `1800` | Recycle a pooled connection after this age, staying under the idle timeout imposed by pgbouncer and managed-Postgres proxies. |
+| `DB_POOL_PRE_PING` | `true` | Validate a connection before handing it out, so a database restart cannot surface as a failed request. |
+| `DB_CONNECT_RETRIES` | `5` | Attempts made during start-up pool warm-up. |
+| `DB_CONNECT_BACKOFF_SECONDS` | `1.0` | Base delay between warm-up attempts; multiplied by the attempt number. |
+| `DB_FAIL_FAST` | `false` | `false` lets the API boot and report itself degraded on `/health/ready`; `true` raises at start-up and lets the orchestrator retry. |
+| `LOG_FORMAT` | `text` | `text` for a terminal, `json` for one JSON object per line in an aggregator. Both formats redact credentials. |
+
+Pool settings only reach the container through `docker-compose.yml`, which
+injects an explicit variable list rather than mounting `.env`. The Compose
+block and `Settings` are covered by tests so a new knob cannot be added to one
+and silently dropped from the other.
+
 ### Production safety rails
 
 Setting `APP_ENV=production` makes `backend/app/core/config.py` **refuse to
@@ -567,7 +586,7 @@ Every failure uses one shape, with a request ID that also appears in the logs:
 ```bash
 cd backend && source .venv/bin/activate
 
-pytest                    # 53 tests; no network or database required
+pytest                    # no network or database required
 pytest --cov              # with coverage
 ruff check .              # lint
 ruff format .             # format
@@ -582,7 +601,10 @@ alembic upgrade head --sql    # print DDL without connecting
 The test suite mocks Token Factory with `httpx.MockTransport` and exercises the
 app in-process through ASGI, so it needs no database, no API key and no
 network. It covers retry/backoff behaviour, auth-error mapping, SSE framing,
-CORS, validation, model enrichment, deprecation handling and log redaction.
+CORS, validation, model enrichment, deprecation handling and log redaction,
+plus the persistence layer: ORM relationships and cascade rules, state-machine
+transitions, ORM/migration drift, request and token metrics, and configuration
+loading from the environment.
 
 ### Frontend
 

@@ -2,9 +2,58 @@
 
 from __future__ import annotations
 
+import pathlib
+from typing import Any
+
 import pytest
 from app.core.config import Settings
 from pydantic import ValidationError
+
+REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
+
+#: Consumed by ``docker-entrypoint.sh``, not by ``Settings``.
+_COMPOSE_ONLY_VARS = frozenset({"RUN_MIGRATIONS", "DB_WAIT_ATTEMPTS"})
+
+#: Runtime knobs that silently stop working if Compose stops forwarding them.
+#: The container receives *only* the explicit ``environment:`` list -- there is no
+#: ``env_file`` and no ``.env`` mount -- so a variable missing from that block is
+#: ignored even when it is set in ``.env``, with no error anywhere.
+_MUST_REACH_CONTAINER = (
+    "LOG_FORMAT",
+    "DB_POOL_RECYCLE_SECONDS",
+    "DB_POOL_PRE_PING",
+    "DB_CONNECT_RETRIES",
+    "DB_CONNECT_BACKOFF_SECONDS",
+    "DB_FAIL_FAST",
+)
+
+
+def _backend_compose_environment() -> dict[str, Any]:
+    yaml = pytest.importorskip("yaml", reason="PyYAML is not a declared test dependency")
+    compose = REPO_ROOT / "docker-compose.yml"
+    if not compose.is_file():
+        pytest.skip("docker-compose.yml not present in this checkout")
+    return yaml.safe_load(compose.read_text(encoding="utf-8"))["services"]["backend"]["environment"]
+
+
+def test_compose_forwards_only_real_settings() -> None:
+    """Every variable Compose injects must be a setting the app actually reads."""
+    names = {name.lower() for name in Settings.model_fields}
+    names |= {f.alias.lower() for f in Settings.model_fields.values() if f.alias}
+
+    unknown = [
+        key
+        for key in _backend_compose_environment()
+        if key not in _COMPOSE_ONLY_VARS and key.lower() not in names
+    ]
+
+    assert unknown == [], f"Compose injects variables Settings does not read: {unknown}"
+
+
+@pytest.mark.parametrize("variable", _MUST_REACH_CONTAINER)
+def test_runtime_settings_are_forwarded_to_the_container(variable: str) -> None:
+    """Guard against the "set it in .env, Compose drops it" failure mode."""
+    assert variable in _backend_compose_environment()
 
 
 def test_database_url_is_derived_from_postgres_parts() -> None:
@@ -44,6 +93,91 @@ def test_cors_origins_accept_csv_and_json() -> None:
 
     assert csv.cors_origins == ["http://a.test", "http://b.test"]
     assert as_json.cors_origins == ["http://c.test"]
+
+
+@pytest.mark.parametrize(
+    ("variable", "value", "field", "expected"),
+    [
+        (
+            "CORS_ORIGINS",
+            "http://a.test,http://b.test",
+            "cors_origins",
+            ["http://a.test", "http://b.test"],
+        ),
+        ("CORS_ORIGINS", '["http://c.test"]', "cors_origins", ["http://c.test"]),
+        ("CORS_ORIGINS", "*", "cors_origins", ["*"]),
+        ("MODEL_ALLOWLIST", "nvidia/a,nvidia/b", "model_allowlist", ["nvidia/a", "nvidia/b"]),
+        ("MODEL_ALLOWLIST", '["nvidia/c"]', "model_allowlist", ["nvidia/c"]),
+    ],
+)
+def test_list_settings_load_from_environment(
+    monkeypatch: pytest.MonkeyPatch,
+    variable: str,
+    value: str,
+    field: str,
+    expected: list[str],
+) -> None:
+    """CSV/JSON list settings must survive the *environment* source.
+
+    Passing these as constructor kwargs bypasses ``EnvSettingsSource`` entirely,
+    so kwargs alone never proved that ``CORS_ORIGINS=http://a,http://b`` — the form
+    shipped in ``.env.example`` and ``docker-compose.yml`` — can boot the app.
+    Without ``NoDecode`` pydantic-settings JSON-decodes the raw value and raises
+    ``SettingsError`` before the CSV validator is ever reached.
+    """
+    monkeypatch.setenv("APP_ENV", "development")
+    monkeypatch.setenv("NEBIUS_API_KEY", "nb_test")
+    monkeypatch.setenv(variable, value)
+
+    assert getattr(Settings(), field) == expected
+
+
+@pytest.mark.parametrize("variable", ["CORS_ORIGINS", "MODEL_ALLOWLIST"])
+def test_empty_list_setting_means_explicitly_none(
+    monkeypatch: pytest.MonkeyPatch, variable: str
+) -> None:
+    """``KEY=`` is the shipped default and must mean "empty", not "unset".
+
+    Falling back to the built-in default would silently re-open the documented
+    localhost origins on a deployment that deliberately cleared them, so an empty
+    value parses to ``[]`` and leaves the field's own default untouched.
+    """
+    monkeypatch.setenv("APP_ENV", "development")
+    monkeypatch.setenv("NEBIUS_API_KEY", "nb_test")
+    monkeypatch.setenv(variable, "")
+
+    assert getattr(Settings(), variable.lower()) == []
+
+
+def test_shipped_env_example_loads_verbatim(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Every documented variable must be loadable exactly as documented."""
+    import pathlib
+
+    examples = [
+        pathlib.Path(__file__).resolve().parents[2] / ".env.example",
+        pathlib.Path(__file__).resolve().parents[1] / ".env.example",
+    ]
+    monkeypatch.setenv("APP_ENV", "development")
+    monkeypatch.setenv("NEBIUS_API_KEY", "nb_test")
+
+    for example in examples:
+        if not example.is_file():
+            continue
+        for raw in example.read_text(encoding="utf-8").splitlines():
+            line = raw.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, value = line.split("=", 1)
+            monkeypatch.setenv(key.strip(), value.strip())
+        monkeypatch.delenv("APP_ENV")
+        monkeypatch.delenv("NEBIUS_API_KEY")
+        monkeypatch.setenv("APP_ENV", "development")
+        monkeypatch.setenv("NEBIUS_API_KEY", "nb_test")
+
+        settings = Settings()  # type: ignore[call-arg]
+
+        assert settings.cors_origins == ["http://localhost:3000", "http://127.0.0.1:3000"]
+        assert settings.model_allowlist == []
 
 
 def test_default_model_falls_back_to_balanced() -> None:

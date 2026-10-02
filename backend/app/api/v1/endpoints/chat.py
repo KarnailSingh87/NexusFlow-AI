@@ -14,6 +14,8 @@ from fastapi.responses import StreamingResponse
 from app.api.deps import NebiusClientDep
 from app.core.config import settings
 from app.core.logging import get_logger
+from app.core.metrics import TokenUsage as MetricTokenUsage
+from app.core.metrics import metrics
 from app.schemas.chat import (
     ChatCompletionChoice,
     ChatCompletionRequest,
@@ -39,12 +41,19 @@ _SSE_HEADERS = {
 def _normalise_completion(
     payload: dict[str, Any], *, model: str, latency_ms: int
 ) -> ChatCompletionResponse:
-    """Map an OpenAI-shaped Token Factory body onto our response schema."""
-    raw_usage = payload.get("usage") or {}
+    """Map an OpenAI-shaped Token Factory body onto our response schema.
+
+    Token usage is folded into the process-wide counters here — the single place
+    every non-streaming completion passes through — so the ledger in
+    ``workflow_runs`` and the live metrics can never drift apart.
+    """
+    parsed = MetricTokenUsage.from_payload(payload)
+    metrics.record_token_usage(parsed, model=str(payload.get("model") or model))
+
     usage = TokenUsage(
-        prompt_tokens=int(raw_usage.get("prompt_tokens") or 0),
-        completion_tokens=int(raw_usage.get("completion_tokens") or 0),
-        total_tokens=int(raw_usage.get("total_tokens") or 0),
+        prompt_tokens=parsed.prompt_tokens,
+        completion_tokens=parsed.completion_tokens,
+        total_tokens=parsed.total_tokens,
     )
 
     choices: list[ChatCompletionChoice] = []
@@ -114,6 +123,27 @@ async def create_completion(
     )
 
 
+def _record_stream_usage(line: str, fallback_model: str | None) -> None:
+    """Fold a streamed SSE frame's ``usage`` object into the metrics.
+
+    A malformed frame must never break the stream, so every parse failure is
+    swallowed — the frame is still forwarded to the browser untouched.
+    """
+    raw = line[5:].strip() if line.startswith("data:") else line.strip()
+    if not raw or raw == "[DONE]":
+        return
+    try:
+        frame = json.loads(raw)
+    except json.JSONDecodeError:
+        return
+    if not isinstance(frame, dict) or "usage" not in frame:
+        return
+    metrics.record_token_usage(
+        MetricTokenUsage.from_payload(frame),
+        model=str(frame.get("model") or fallback_model or settings.nemotron_default_model),
+    )
+
+
 @router.post(
     "/completions/stream",
     summary="Stream a chat completion (SSE)",
@@ -148,7 +178,12 @@ async def stream_completion(
                 top_p=payload.top_p,
                 stop=payload.stop,
                 tools=payload.tools,
+                # Ask for a terminal usage frame so streaming calls are billed in
+                # the metrics exactly like buffered ones.
+                extra_body={"stream_options": {"include_usage": True}},
             ):
+                if '"usage"' in line:
+                    _record_stream_usage(line, payload.model)
                 if line.startswith("data:"):
                     yield f"{line}\n\n"
                 else:

@@ -59,6 +59,8 @@ services:
       APP_ENV: ${APP_ENV:-development}
       DEBUG: ${DEBUG:-false}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      # text = human-readable; json = one JSON object per line for aggregators.
+      LOG_FORMAT: ${LOG_FORMAT:-text}
       API_V1_PREFIX: ${API_V1_PREFIX:-/api/v1}
       DOCS_ENABLED: ${DOCS_ENABLED:-true}
 
@@ -74,6 +76,15 @@ services:
       DB_POOL_SIZE: ${DB_POOL_SIZE:-10}
       DB_MAX_OVERFLOW: ${DB_MAX_OVERFLOW:-20}
       DB_ECHO: ${DB_ECHO:-false}
+      # Pool lifecycle: recycle before a proxy drops an idle socket, and ping on
+      # checkout so a Postgres restart cannot surface as a failed request.
+      DB_POOL_RECYCLE_SECONDS: ${DB_POOL_RECYCLE_SECONDS:-1800}
+      DB_POOL_PRE_PING: ${DB_POOL_PRE_PING:-true}
+      # Start-up warm-up. With DB_FAIL_FAST=false the API still boots and reports
+      # itself degraded on /health/ready instead of crash-looping.
+      DB_CONNECT_RETRIES: ${DB_CONNECT_RETRIES:-5}
+      DB_CONNECT_BACKOFF_SECONDS: ${DB_CONNECT_BACKOFF_SECONDS:-1.0}
+      DB_FAIL_FAST: ${DB_FAIL_FAST:-false}
 
       # --- Nebius Token Factory -----------------------------------------
       NEBIUS_API_KEY: ${NEBIUS_API_KEY:?NEBIUS_API_KEY is required — get one at https://tokenfactory.nebius.com/project/api-keys}
