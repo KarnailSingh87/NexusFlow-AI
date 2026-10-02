@@ -286,3 +286,55 @@ class TestIngestionSettings:
         settings = Settings()  # type: ignore[call-arg]
         assert settings.dev_auth_enabled is True
         assert "@" in settings.dev_user_email
+
+
+class TestJobSettings:
+    """The job knobs must be tunable and must reject values that hang the queue."""
+
+    def test_defaults_run_a_small_pool(self) -> None:
+        settings = Settings()  # type: ignore[call-arg]
+        assert settings.jobs_enabled is True
+        assert settings.job_worker_concurrency == 2
+        assert settings.job_max_attempts >= 1
+
+    @pytest.mark.parametrize(
+        "field",
+        [
+            "JOB_WORKER_CONCURRENCY",
+            "JOB_MAX_ATTEMPTS",
+            "JOB_POLL_INTERVAL",
+            "JOB_RETRY_BACKOFF_SECONDS",
+            "JOB_STALE_AFTER_SECONDS",
+            "JOB_EXECUTION_TIMEOUT",
+            "JOB_DRAIN_TIMEOUT",
+            "JOB_MAX_LOG_ENTRIES",
+        ],
+    )
+    def test_zero_is_rejected(self, field: str) -> None:
+        """Zero workers would strand jobs; zero polling would spin the CPU."""
+        with pytest.raises(ValidationError):
+            Settings(**{field: 0})  # type: ignore[call-arg]
+
+    def test_negative_concurrency_is_rejected(self) -> None:
+        with pytest.raises(ValidationError):
+            Settings(JOB_WORKER_CONCURRENCY=-1)  # type: ignore[call-arg]
+
+    def test_execution_timeout_outlasts_a_large_document(self) -> None:
+        """A 500-page audit must fit inside the default attempt budget."""
+        settings = Settings()  # type: ignore[call-arg]
+        assert settings.job_execution_timeout_seconds >= 300
+
+    def test_compose_forwards_every_job_setting(self) -> None:
+        compose = _backend_compose_environment()
+        for key in (
+            "JOBS_ENABLED",
+            "JOB_WORKER_CONCURRENCY",
+            "JOB_POLL_INTERVAL",
+            "JOB_MAX_ATTEMPTS",
+            "JOB_RETRY_BACKOFF_SECONDS",
+            "JOB_STALE_AFTER_SECONDS",
+            "JOB_EXECUTION_TIMEOUT",
+            "JOB_DRAIN_TIMEOUT",
+            "JOB_MAX_LOG_ENTRIES",
+        ):
+            assert key in compose, f"{key} not forwarded by docker-compose"

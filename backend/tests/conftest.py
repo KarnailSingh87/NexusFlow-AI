@@ -11,6 +11,7 @@ from __future__ import annotations
 import os
 from collections.abc import AsyncIterator, Callable, Iterator
 from pathlib import Path
+from typing import Any
 
 import httpx
 import pytest
@@ -35,10 +36,11 @@ from app.core.config import Settings, get_settings
 from app.db.models import Base
 from app.db.session import get_session
 from app.main import create_app
+from app.services.jobs import JobWorker
 from app.services.nebius import NebiusClient
 from fastapi import FastAPI, Request
 from httpx import ASGITransport
-from sqlalchemy import text
+from sqlalchemy import event, text
 from sqlalchemy.ext.asyncio import (
     AsyncSession,
     async_sessionmaker,
@@ -137,6 +139,12 @@ def override_session(app: FastAPI) -> Callable[[AsyncSession], None]:
 
 
 @pytest.fixture
+def settings() -> Settings:
+    """The process settings, as a fixture so a test can derive a variant."""
+    return get_settings()
+
+
+@pytest.fixture
 def upload_dir(tmp_path: Path) -> Path:
     """An isolated storage directory for uploads created during a test."""
     target = tmp_path / "uploads"
@@ -154,3 +162,108 @@ def ingest_settings(settings: Settings) -> Settings:
             "ingest_embed_chunks": False,
         }
     )
+
+
+@pytest.fixture
+async def queue_engine(tmp_path: Path) -> AsyncIterator[async_sessionmaker[AsyncSession]]:
+    """A session factory over a file-backed SQLite database for the job queue.
+
+    Deliberately *not* ``:memory:``. An in-memory SQLite engine uses
+    ``StaticPool``, so every session shares one connection and two concurrent
+    workers interleave their transactions on it — which hides exactly the
+    claiming races this suite exists to catch. A file-backed database gives each
+    session its own connection and real locking, the way Postgres will in
+    production.
+
+    The worker opens sessions from a factory rather than sharing the request's
+    session, so the factory must outlive any single session.
+    """
+    engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'queue.db'}")
+
+    # Foreign keys are per-connection in SQLite and off by default, so the pragma
+    # has to be attached to every pooled connection. Setting it once on one
+    # connection would leave ON DELETE CASCADE silently inert on the others, and
+    # a cascade test would pass or fail depending on which connection it drew.
+    @event.listens_for(engine.sync_engine, "connect")
+    def _enable_foreign_keys(dbapi_connection: Any, _record: Any) -> None:
+        cursor = dbapi_connection.cursor()
+        try:
+            cursor.execute("PRAGMA foreign_keys=ON")
+        finally:
+            cursor.close()
+
+    async with engine.begin() as connection:
+        await connection.run_sync(Base.metadata.create_all)
+
+    maker = async_sessionmaker(engine, expire_on_commit=False)
+    try:
+        yield maker
+    finally:
+        await engine.dispose()
+
+
+@pytest.fixture
+def job_settings(settings: Settings) -> Settings:
+    """Settings tuned so a queued job runs within a test rather than never."""
+    return settings.model_copy(
+        update={
+            "jobs_enabled": True,
+            "job_worker_concurrency": 2,
+            "job_poll_interval": 0.01,
+            "job_retry_backoff_seconds": 0.01,
+            "job_stale_after_seconds": 5.0,
+            "job_execution_timeout_seconds": 10.0,
+            "job_drain_timeout_seconds": 5.0,
+            "job_max_log_entries": 200,
+            "ingest_embed_chunks": False,
+        }
+    )
+
+
+class FakeEmbeddingClient:
+    """Minimal stand-in for the Nebius client's embedding method."""
+
+    def __init__(self, *, dimensions: int = 3) -> None:
+        self.dimensions = dimensions
+        self.calls: list[list[str]] = []
+
+    async def create_embeddings(
+        self, *, input_texts: list[str], model: str | None = None
+    ) -> list[list[float]]:
+        self.calls.append(list(input_texts))
+        return [[0.1 * (index + 1)] * self.dimensions for index, _ in enumerate(input_texts)]
+
+
+@pytest.fixture
+def fake_client() -> FakeEmbeddingClient:
+    """A client whose embeddings are deterministic and instant."""
+    return FakeEmbeddingClient()
+
+
+@pytest.fixture
+async def running_worker(
+    queue_engine: async_sessionmaker[AsyncSession], job_settings: Settings
+) -> AsyncIterator[JobWorker]:
+    """A started :class:`JobWorker` that is always stopped on teardown."""
+    worker = JobWorker(queue_engine, config=job_settings, name="test-worker")
+    await worker.start()
+    try:
+        yield worker
+    finally:
+        await worker.stop()
+
+
+@pytest.fixture
+def make_worker(
+    queue_engine: async_sessionmaker[AsyncSession], job_settings: Settings
+) -> Callable[..., JobWorker]:
+    """Build a worker with a chosen config, for tests that need control."""
+
+    def _make(**overrides: Any) -> JobWorker:
+        return JobWorker(
+            queue_engine,
+            config=job_settings.model_copy(update=overrides) if overrides else job_settings,
+            name="custom-worker",
+        )
+
+    return _make

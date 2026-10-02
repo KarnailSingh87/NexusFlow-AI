@@ -134,6 +134,34 @@ class Settings(BaseSettings):
     clamav_port: int = Field(default=3310, alias="CLAMAV_PORT")
 
     # ------------------------------------------------------------------
+    # Background jobs
+    # ------------------------------------------------------------------
+    #: Run the in-process worker pool. Disabling it keeps the queue tables and
+    #: the submit/status endpoints usable while nothing consumes the queue,
+    #: which is what a separate worker deployment wants.
+    jobs_enabled: bool = Field(default=True, alias="JOBS_ENABLED")
+    #: Worker coroutines per process. Each runs one job at a time, so this is
+    #: also the ceiling on concurrent extractions in this container.
+    job_worker_concurrency: int = Field(default=2, alias="JOB_WORKER_CONCURRENCY")
+    #: Seconds between dispatcher sweeps when the queue is empty. Also the floor
+    #: for retry backoff granularity, so a tight value costs idle queries.
+    job_poll_interval: float = Field(default=1.0, alias="JOB_POLL_INTERVAL")
+    #: Default retry budget for a job that fails transiently.
+    job_max_attempts: int = Field(default=3, alias="JOB_MAX_ATTEMPTS")
+    #: Base delay between retries, multiplied by the attempt number.
+    job_retry_backoff_seconds: float = Field(default=5.0, alias="JOB_RETRY_BACKOFF_SECONDS")
+    #: A claimed job whose heartbeat is older than this is assumed to have died
+    #: with its worker and is returned to the queue.
+    job_stale_after_seconds: float = Field(default=300.0, alias="JOB_STALE_AFTER_SECONDS")
+    #: Hard ceiling on one attempt. A 500-page audit that blows this is failed
+    #: rather than left occupying a worker forever.
+    job_execution_timeout_seconds: float = Field(default=900.0, alias="JOB_EXECUTION_TIMEOUT")
+    #: Seconds to let in-flight jobs finish during graceful shutdown.
+    job_drain_timeout_seconds: float = Field(default=30.0, alias="JOB_DRAIN_TIMEOUT")
+    #: Telemetry lines retained per job; older ones are trimmed by the worker.
+    job_max_log_entries: int = Field(default=500, alias="JOB_MAX_LOG_ENTRIES")
+
+    # ------------------------------------------------------------------
     # Access control
     # ------------------------------------------------------------------
     #: Enables the development principal resolver, which trusts the
@@ -251,6 +279,28 @@ class Settings(BaseSettings):
         if not cleaned.endswith("/v1"):
             cleaned = f"{cleaned}/v1"
         return cleaned
+
+    @field_validator(
+        "job_worker_concurrency",
+        "job_max_attempts",
+        "job_poll_interval",
+        "job_retry_backoff_seconds",
+        "job_stale_after_seconds",
+        "job_execution_timeout_seconds",
+        "job_drain_timeout_seconds",
+        "job_max_log_entries",
+    )
+    @classmethod
+    def _reject_non_positive_job_tuning(cls, value: float) -> float:
+        """Job tuning knobs must be strictly positive.
+
+        A zero here is never a harmless default: zero workers would leave jobs
+        queued forever, and a zero poll interval would spin the dispatcher at
+        full CPU against the database.
+        """
+        if value <= 0:
+            raise ValueError("must be greater than zero")
+        return value
 
     @field_validator("nebius_max_retries")
     @classmethod

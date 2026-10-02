@@ -26,6 +26,10 @@ BACKEND_ROOT = Path(__file__).resolve().parent.parent
 
 _CREATE_TABLE = re.compile(r"CREATE TABLE (\w+) \((.*?)\n\)", re.DOTALL)
 _COLUMN = re.compile(r"^\s*(\w+) ")
+#: Additive migrations emit ALTER TABLE ... ADD COLUMN, which CREATE TABLE alone
+#: cannot see. Without this, adding a column in a later revision would always look
+#: like drift and the guard would push developers to rewrite history instead.
+_ADD_COLUMN = re.compile(r"ALTER TABLE (\w+) ADD COLUMN (\w+)")
 _CONSTRAINT_PREFIXES = ("CONSTRAINT", "UNIQUE", "PRIMARY", "FOREIGN", "CHECK")
 
 
@@ -59,6 +63,9 @@ def migrated_schema() -> dict[str, set[str]]:
             if match:
                 columns.add(match.group(1))
         schema[table] = columns
+
+    for table, column in _ADD_COLUMN.findall(buffer.getvalue()):
+        schema.setdefault(table, set()).add(column)
     return schema
 
 

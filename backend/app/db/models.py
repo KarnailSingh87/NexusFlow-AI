@@ -73,6 +73,12 @@ class JobState(enum.StrEnum):
     PROCESSING = "processing"
     COMPLETED = "completed"
     FAILED = "failed"
+    CANCELLED = "cancelled"
+
+    @property
+    def is_terminal(self) -> bool:
+        """Whether no further transition is possible from this state."""
+        return self in _TERMINAL_JOB_STATES
 
 
 class JobType(enum.StrEnum):
@@ -96,13 +102,21 @@ class StepKind(enum.StrEnum):
     HUMAN = "human"
 
 
+#: States from which a job can never move again. ``failed`` is *not* terminal:
+#: it is requeued while retry attempts remain, which is what lets a transient
+#: provider error recover without operator intervention.
+_TERMINAL_JOB_STATES: frozenset[JobState] = frozenset({JobState.COMPLETED, JobState.CANCELLED})
+
 #: Legal state transitions for a background job. ``completed`` is terminal;
 #: ``failed`` may be requeued while retry attempts remain, which is what lets a
 #: transient provider error recover without operator intervention.
+#: ``cancelled`` is reachable from both live states so a queued or in-flight job
+#: can be stopped, but a job that already finished cannot be cancelled.
 JOB_STATE_TRANSITIONS: dict[JobState, frozenset[JobState]] = {
-    JobState.QUEUED: frozenset({JobState.PROCESSING, JobState.FAILED}),
-    JobState.PROCESSING: frozenset({JobState.COMPLETED, JobState.FAILED}),
+    JobState.QUEUED: frozenset({JobState.PROCESSING, JobState.FAILED, JobState.CANCELLED}),
+    JobState.PROCESSING: frozenset({JobState.COMPLETED, JobState.FAILED, JobState.CANCELLED}),
     JobState.COMPLETED: frozenset(),
+    JobState.CANCELLED: frozenset(),
     JobState.FAILED: frozenset({JobState.QUEUED}),
 }
 
@@ -421,6 +435,13 @@ class BackgroundJob(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     error: Mapped[str | None] = mapped_column(Text)
     error_code: Mapped[str | None] = mapped_column(String(64))
 
+    #: Set by the cancel endpoint. An in-flight job checks this at its next
+    #: checkpoint and unwinds, so cancellation does not require killing the
+    #: worker. A queued job is cancelled without ever being claimed.
+    cancel_requested: Mapped[bool] = mapped_column(
+        Boolean, default=False, nullable=False, index=True
+    )
+
     # A freshly enqueued job is immediately visible to the dispatcher; a retry
     # backdates this to schedule the next attempt.
     available_at: Mapped[datetime] = mapped_column(
@@ -447,3 +468,37 @@ class BackgroundJob(UUIDPrimaryKeyMixin, TimestampMixin, Base):
 
     def __repr__(self) -> str:  # pragma: no cover - debug helper
         return f"<BackgroundJob {self.job_type} {self.state}>"
+
+
+class JobLog(UUIDPrimaryKeyMixin, TimestampMixin, Base):
+    """One telemetry line emitted while a background job runs.
+
+    Worker progress is otherwise invisible once the submitting HTTP request has
+    returned, so each attempt appends here: state changes, durations, token
+    counts, and the reason a job failed. Rows cascade with their job, which
+    keeps a deleted job's log from becoming orphaned telemetry nobody can
+    attribute.
+    """
+
+    __tablename__ = "job_logs"
+
+    job_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("background_jobs.id", ondelete="CASCADE"), nullable=False
+    )
+    #: Zero-based position within the job, so a client can detect gaps.
+    sequence: Mapped[int] = mapped_column(Integer, nullable=False)
+    level: Mapped[str] = mapped_column(String(16), default="info", nullable=False)
+    event: Mapped[str] = mapped_column(String(64), nullable=False)
+    message: Mapped[str] = mapped_column(Text, nullable=False)
+    #: Free-form structured detail: token counts, durations, retry numbers.
+    data: Mapped[dict[str, Any]] = mapped_column(JSONVariant, default=dict, nullable=False)
+    #: Wall-clock offset from the job's first log line, in milliseconds.
+    elapsed_ms: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("job_id", "sequence", name="uq_job_logs_job_id_sequence"),
+        Index("ix_job_logs_job_id_sequence", "job_id", "sequence"),
+    )
+
+    def __repr__(self) -> str:  # pragma: no cover - debug helper
+        return f"<JobLog {self.job_id} #{self.sequence} {self.event}>"

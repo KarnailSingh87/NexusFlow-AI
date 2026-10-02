@@ -76,6 +76,7 @@ def test_every_table_is_registered() -> None:
         "workflow_runs",
         "workflow_steps",
         "background_jobs",
+        "job_logs",
     }
 
 
@@ -166,6 +167,7 @@ def test_simulation_states_match_the_nebius_job_lifecycle() -> None:
         "processing",
         "completed",
         "failed",
+        "cancelled",
     ]
 
 

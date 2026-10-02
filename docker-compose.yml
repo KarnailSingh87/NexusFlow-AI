@@ -117,6 +117,20 @@ services:
       DEV_AUTH_ENABLED: ${DEV_AUTH_ENABLED:-true}
       DEV_USER_EMAIL: ${DEV_USER_EMAIL:-dev@nexusflow.local}
 
+      # --- background job queue -----------------------------------------
+      # The API process also runs the worker. Scale JOB_WORKER_CONCURRENCY for
+      # heavy document workloads, or set JOBS_ENABLED=false on the API and run a
+      # dedicated worker process against the same database.
+      JOBS_ENABLED: ${JOBS_ENABLED:-true}
+      JOB_WORKER_CONCURRENCY: ${JOB_WORKER_CONCURRENCY:-2}
+      JOB_POLL_INTERVAL: ${JOB_POLL_INTERVAL:-1.0}
+      JOB_MAX_ATTEMPTS: ${JOB_MAX_ATTEMPTS:-3}
+      JOB_RETRY_BACKOFF_SECONDS: ${JOB_RETRY_BACKOFF_SECONDS:-5.0}
+      JOB_STALE_AFTER_SECONDS: ${JOB_STALE_AFTER_SECONDS:-300.0}
+      JOB_EXECUTION_TIMEOUT: ${JOB_EXECUTION_TIMEOUT:-900.0}
+      JOB_DRAIN_TIMEOUT: ${JOB_DRAIN_TIMEOUT:-30.0}
+      JOB_MAX_LOG_ENTRIES: ${JOB_MAX_LOG_ENTRIES:-500}
+
       # --- generation guard rails ---------------------------------------
       LLM_DEFAULT_TEMPERATURE: ${LLM_DEFAULT_TEMPERATURE:-0.6}
       LLM_DEFAULT_MAX_TOKENS: ${LLM_DEFAULT_MAX_TOKENS:-2048}

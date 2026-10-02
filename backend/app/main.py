@@ -22,7 +22,8 @@ from app.api.v1.router import api_router
 from app.core.config import settings
 from app.core.logging import configure_logging, get_logger, request_scope
 from app.core.metrics import metrics
-from app.db.session import dispose_engine, pool_status, warmup_pool
+from app.db.session import SessionLocal, dispose_engine, pool_status, warmup_pool
+from app.services.jobs import JobWorker
 from app.services.nebius import NebiusClient, NebiusConfigurationError, NebiusError
 
 configure_logging()
@@ -62,9 +63,31 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     app.state.nebius_client = nebius_client
 
+    # The job worker consumes the queue that the HTTP layer writes to. It lives
+    # on app.state so the endpoints can report whether a consumer is attached —
+    # a queue nobody reads would otherwise look identical to a slow one.
+    job_worker: JobWorker | None = None
+    if settings.jobs_enabled:
+        job_worker = JobWorker(SessionLocal, config=settings, nebius_client=nebius_client)
+        try:
+            await job_worker.start()
+        except Exception:
+            # A queue that cannot be consumed must not stop the API from
+            # serving uploads and chat; jobs simply wait until a restart.
+            logger.exception("job worker failed to start; jobs will queue unprocessed")
+            job_worker = None
+    else:
+        logger.info("job worker disabled (JOBS_ENABLED=false); jobs will queue unprocessed")
+    app.state.job_worker = job_worker
+
     try:
         yield
     finally:
+        # Drain before closing the client so a job mid-flight still finds a live
+        # provider and database; tearing either down first would fail every
+        # in-flight job and turn a clean deploy into a burst of retries.
+        if job_worker is not None:
+            await job_worker.stop()
         if nebius_client is not None:
             await nebius_client.aclose()
         logger.info("database pool before shutdown: %s", pool_status())

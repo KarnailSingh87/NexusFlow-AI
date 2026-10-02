@@ -166,6 +166,12 @@ class MetricsRegistry:
         self._tokens = TokenUsage()
         self._tokens_by_model: dict[str, TokenUsage] = {}
         self._calls_by_model: dict[str, int] = {}
+        self.jobs_total = 0
+        self.jobs_completed = 0
+        self.jobs_failed = 0
+        self.jobs_duration_ms = 0
+        self._job_tokens = TokenUsage()
+        self._jobs_by_type: dict[str, dict[str, int]] = {}
 
     # ------------------------------------------------------------------
     # Request lifecycle
@@ -214,6 +220,42 @@ class MetricsRegistry:
         return total
 
     # ------------------------------------------------------------------
+    # Background jobs
+    # ------------------------------------------------------------------
+    def record_job(
+        self,
+        *,
+        state: str,
+        job_type: str,
+        duration_ms: int,
+        usage: TokenUsage | None = None,
+    ) -> None:
+        """Record one job attempt's outcome.
+
+        Job token usage is summed separately from request usage: a background
+        job bills the provider just as a user request does, but rolling it into
+        the request totals would make "requests that cost tokens" meaningless
+        when a single job may embed thousands of chunks.
+        """
+        with self._lock:
+            self.jobs_total += 1
+            if state == "completed":
+                self.jobs_completed += 1
+            elif state in ("failed", "cancelled"):
+                self.jobs_failed += 1
+            self.jobs_duration_ms += max(0, duration_ms)
+            stat = self._jobs_by_type.setdefault(
+                job_type, {"total": 0, "completed": 0, "failed": 0}
+            )
+            stat["total"] += 1
+            if state == "completed":
+                stat["completed"] += 1
+            elif state in ("failed", "cancelled"):
+                stat["failed"] += 1
+            if usage is not None and usage.total_tokens:
+                self._job_tokens = self._job_tokens + usage
+
+    # ------------------------------------------------------------------
     # Reporting
     # ------------------------------------------------------------------
     @property
@@ -221,6 +263,12 @@ class MetricsRegistry:
         """Cumulative token usage across every recorded call."""
         with self._lock:
             return self._tokens
+
+    @property
+    def job_tokens(self) -> TokenUsage:
+        """Cumulative token usage billed by background jobs."""
+        with self._lock:
+            return self._job_tokens
 
     def snapshot(self) -> dict[str, Any]:
         """Return a JSON-serialisable view of every counter.
@@ -240,6 +288,19 @@ class MetricsRegistry:
                     model: {**usage.as_dict(), "calls": self._calls_by_model.get(model, 0)}
                     for model, usage in sorted(self._tokens_by_model.items())
                 },
+                "jobs": {
+                    "total": self.jobs_total,
+                    "completed": self.jobs_completed,
+                    "failed": self.jobs_failed,
+                    "tokens": self._job_tokens.as_dict(),
+                    "duration_ms_total": self.jobs_duration_ms,
+                    "duration_ms_avg": (
+                        self.jobs_duration_ms // self.jobs_total if self.jobs_total else 0
+                    ),
+                    "by_type": {
+                        name: dict(stat) for name, stat in sorted(self._jobs_by_type.items())
+                    },
+                },
             }
 
     def reset(self) -> None:
@@ -252,6 +313,12 @@ class MetricsRegistry:
             self._tokens = TokenUsage()
             self._tokens_by_model.clear()
             self._calls_by_model.clear()
+            self.jobs_total = 0
+            self.jobs_completed = 0
+            self.jobs_failed = 0
+            self.jobs_duration_ms = 0
+            self._job_tokens = TokenUsage()
+            self._jobs_by_type.clear()
 
 
 #: Process-wide registry. Import ``metrics`` (never construct your own) so the
