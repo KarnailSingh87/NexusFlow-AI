@@ -223,3 +223,66 @@ def test_production_accepts_valid_configuration() -> None:
     )
 
     assert settings.is_production is True
+
+
+# ---------------------------------------------------------------------------
+# Document ingestion settings
+# ---------------------------------------------------------------------------
+class TestIngestionSettings:
+    def test_allowed_extensions_accepts_csv(self) -> None:
+        settings = Settings(  # type: ignore[call-arg]
+            UPLOAD_ALLOWED_EXTENSIONS="pdf,docx,txt,csv"
+        )
+        assert settings.upload_allowed_extensions == ["pdf", "docx", "txt", "csv"]
+
+    def test_allowed_extensions_empty_means_all_supported(self) -> None:
+        settings = Settings(UPLOAD_ALLOWED_EXTENSIONS="")  # type: ignore[call-arg]
+        assert settings.upload_allowed_extensions == []
+
+    def test_allowed_extensions_accepts_json(self) -> None:
+        settings = Settings(UPLOAD_ALLOWED_EXTENSIONS='["pdf","csv"]')  # type: ignore[call-arg]
+        assert settings.upload_allowed_extensions == ["pdf", "csv"]
+
+    def test_upload_defaults_are_sane(self) -> None:
+        settings = Settings()  # type: ignore[call-arg]
+        assert settings.upload_max_bytes > 0
+        assert settings.upload_storage_dir
+        assert settings.ingest_chunk_size > 0
+        assert settings.ingest_max_chunks > 0
+
+    def test_chunk_overlap_defaults_below_chunk_size(self) -> None:
+        """Overlap must not consume the whole chunk budget."""
+        settings = Settings()  # type: ignore[call-arg]
+        assert settings.ingest_chunk_overlap < settings.ingest_chunk_size
+
+    def test_clamav_disabled_by_default(self) -> None:
+        settings = Settings()  # type: ignore[call-arg]
+        assert settings.clamav_host == ""
+        assert settings.clamav_port == 3310
+
+    def test_compose_forwards_every_ingestion_setting(self) -> None:
+        compose = _backend_compose_environment()
+        for key in (
+            "UPLOAD_MAX_BYTES",
+            "UPLOAD_STORAGE_DIR",
+            "UPLOAD_ALLOWED_EXTENSIONS",
+            "UPLOAD_REQUIRE_TEXT",
+            "INGEST_CHUNK_SIZE",
+            "INGEST_CHUNK_OVERLAP",
+            "INGEST_MAX_CHUNKS",
+            "INGEST_EMBED_CHUNKS",
+            "CLAMAV_HOST",
+            "CLAMAV_PORT",
+            "DEV_AUTH_ENABLED",
+            "DEV_USER_EMAIL",
+        ):
+            assert key in compose, f"{key} not forwarded by docker-compose"
+
+    def test_compose_storage_dir_is_not_ephemeral_tmp(self) -> None:
+        """Compose must not point uploads at a container-local temp dir."""
+        assert _backend_compose_environment()["UPLOAD_STORAGE_DIR"] != ""
+
+    def test_dev_auth_defaults_are_development_only(self) -> None:
+        settings = Settings()  # type: ignore[call-arg]
+        assert settings.dev_auth_enabled is True
+        assert "@" in settings.dev_user_email

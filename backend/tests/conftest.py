@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import os
 from collections.abc import AsyncIterator, Callable, Iterator
+from pathlib import Path
 
 import httpx
 import pytest
@@ -31,10 +32,18 @@ os.environ.setdefault("DB_CONNECT_BACKOFF_SECONDS", "0")
 
 from app.api.deps import get_nebius_client
 from app.core.config import Settings, get_settings
+from app.db.models import Base
+from app.db.session import get_session
 from app.main import create_app
 from app.services.nebius import NebiusClient
 from fastapi import FastAPI, Request
 from httpx import ASGITransport
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import (
+    AsyncSession,
+    async_sessionmaker,
+    create_async_engine,
+)
 
 
 @pytest.fixture(scope="session")
@@ -87,3 +96,61 @@ def override_nebius(app: FastAPI) -> Iterator[Callable[[NebiusClient], None]]:
 
     yield _install
     app.dependency_overrides.clear()
+
+
+@pytest.fixture
+async def db_session(app: FastAPI) -> AsyncIterator[AsyncSession]:
+    """A real async session against a throwaway in-memory SQLite database.
+
+    The rest of the suite never touches a database, but the ingestion endpoints
+    genuinely need one — chunk persistence, ownership checks, and cascade
+    deletes are the behaviour under test. An in-memory SQLite engine with
+    ``foreign_keys=ON`` exercises those paths for real without a Postgres
+    server, while keeping ``JSONVariant`` columns working the same way they do in
+    production.
+    """
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    async with engine.begin() as connection:
+        await connection.run_sync(lambda sync: sync.execute(text("PRAGMA foreign_keys=ON")))
+        await connection.run_sync(Base.metadata.create_all)
+
+    maker = async_sessionmaker(engine, expire_on_commit=False)
+    async with maker() as session:
+        try:
+            yield session
+        finally:
+            await session.close()
+    await engine.dispose()
+
+
+@pytest.fixture
+def override_session(app: FastAPI) -> Callable[[AsyncSession], None]:
+    """Point the ``get_session`` dependency at a test database."""
+
+    def _install(session: AsyncSession) -> None:
+        async def _get() -> AsyncIterator[AsyncSession]:
+            yield session
+
+        app.dependency_overrides[get_session] = _get
+
+    return _install
+
+
+@pytest.fixture
+def upload_dir(tmp_path: Path) -> Path:
+    """An isolated storage directory for uploads created during a test."""
+    target = tmp_path / "uploads"
+    target.mkdir()
+    return target
+
+
+@pytest.fixture
+def ingest_settings(settings: Settings) -> Settings:
+    """Settings pointed at the per-test storage directory and small limits."""
+    return settings.model_copy(
+        update={
+            "upload_storage_dir": str(settings.upload_storage_dir),
+            "clamav_host": "",
+            "ingest_embed_chunks": False,
+        }
+    )

@@ -101,6 +101,22 @@ services:
       NEMOTRON_EMBEDDING_MODEL: ${NEMOTRON_EMBEDDING_MODEL:-Qwen/Qwen3-Embedding-8B}
       MODEL_ALLOWLIST: ${MODEL_ALLOWLIST:-}
 
+      # --- document ingestion -------------------------------------------
+      UPLOAD_MAX_BYTES: ${UPLOAD_MAX_BYTES:-26214400}
+      UPLOAD_STORAGE_DIR: ${UPLOAD_STORAGE_DIR:-/data/uploads}
+      UPLOAD_ALLOWED_EXTENSIONS: ${UPLOAD_ALLOWED_EXTENSIONS:-pdf,docx,txt,csv}
+      UPLOAD_REQUIRE_TEXT: ${UPLOAD_REQUIRE_TEXT:-true}
+      INGEST_CHUNK_SIZE: ${INGEST_CHUNK_SIZE:-1200}
+      INGEST_CHUNK_OVERLAP: ${INGEST_CHUNK_OVERLAP:-200}
+      INGEST_MAX_CHUNKS: ${INGEST_MAX_CHUNKS:-2000}
+      INGEST_EMBED_CHUNKS: ${INGEST_EMBED_CHUNKS:-true}
+      CLAMAV_HOST: ${CLAMAV_HOST:-}
+      CLAMAV_PORT: ${CLAMAV_PORT:-3310}
+
+      # --- access control (development only) -----------------------------
+      DEV_AUTH_ENABLED: ${DEV_AUTH_ENABLED:-true}
+      DEV_USER_EMAIL: ${DEV_USER_EMAIL:-dev@nexusflow.local}
+
       # --- generation guard rails ---------------------------------------
       LLM_DEFAULT_TEMPERATURE: ${LLM_DEFAULT_TEMPERATURE:-0.6}
       LLM_DEFAULT_MAX_TOKENS: ${LLM_DEFAULT_MAX_TOKENS:-2048}
@@ -118,6 +134,10 @@ services:
       DB_WAIT_ATTEMPTS: ${DB_WAIT_ATTEMPTS:-30}
     ports:
       - "${BACKEND_PORT:-8000}:8000"
+    volumes:
+      # Uploaded originals live outside the container filesystem so they
+      # survive restarts and redeploys.
+      - uploads:/data/uploads
     healthcheck:
       test:
         [
@@ -176,6 +196,8 @@ services:
 
 volumes:
   pgdata:
+    driver: local
+  uploads:
     driver: local
 
 networks:

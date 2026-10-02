@@ -17,6 +17,11 @@ email-validator==2.3.0
 # --- Nebius Token Factory client -----------------------------------------
 httpx==0.28.1
 
+# --- Document ingestion ---------------------------------------------------
+# Pure-Python wheels: no compiled extension to build in the runtime image.
+pypdf==6.19.0
+python-docx==1.2.0
+
 # --- Persistence ----------------------------------------------------------
 sqlalchemy[asyncio]==2.1.2
 asyncpg==0.31.0

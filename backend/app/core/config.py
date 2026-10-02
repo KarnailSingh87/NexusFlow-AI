@@ -7,7 +7,9 @@ from a ``.env`` file). Nothing secret is ever hard-coded — see ``.env.example`
 from __future__ import annotations
 
 import json
+import tempfile
 from functools import lru_cache
+from pathlib import Path
 from typing import Annotated, Any, Literal
 
 from pydantic import Field, SecretStr, field_validator, model_validator
@@ -95,6 +97,55 @@ class Settings(BaseSettings):
     db_fail_fast: bool = Field(default=False, alias="DB_FAIL_FAST")
 
     # ------------------------------------------------------------------
+    # Document ingestion
+    # ------------------------------------------------------------------
+    #: Hard ceiling on a single upload, in bytes. Enforced while streaming, so
+    #: an oversized body is rejected before it is ever buffered to disk.
+    upload_max_bytes: int = Field(default=25 * 1024 * 1024, alias="UPLOAD_MAX_BYTES")
+    #: Where original bytes are written. Defaults to a subdirectory of the
+    #: platform temp dir; override this in production, because a container
+    #: filesystem is ephemeral and may be world-readable.
+    upload_storage_dir: str = Field(
+        default_factory=lambda: str(Path(tempfile.gettempdir()) / "nexusflow" / "uploads"),
+        alias="UPLOAD_STORAGE_DIR",
+    )
+    #: Accepted upload extensions. The real gate is magic-byte sniffing; this
+    #: list only rejects obviously unwanted names early.
+    upload_allowed_extensions: CsvList = Field(
+        default_factory=lambda: ["pdf", "docx", "txt", "csv"],
+        alias="UPLOAD_ALLOWED_EXTENSIONS",
+    )
+    #: Reject files with no extractable text (scanned images, empty CSVs).
+    upload_require_text: bool = Field(default=True, alias="UPLOAD_REQUIRE_TEXT")
+    #: Soft cap on chunks per document, to bound embedding spend on one upload.
+    ingest_max_chunks: int = Field(default=2000, alias="INGEST_MAX_CHUNKS")
+    #: Target chunk size in characters. ~4 chars/token, so the default is
+    #: roughly 300 tokens, comfortably inside an embedding model's window.
+    ingest_chunk_size: int = Field(default=1200, alias="INGEST_CHUNK_SIZE")
+    #: Characters repeated between adjacent chunks so a sentence split across a
+    #: boundary is still retrievable from either side.
+    ingest_chunk_overlap: int = Field(default=200, alias="INGEST_CHUNK_OVERLAP")
+    #: Embed chunks during ingestion. Turning this off stores raw text only,
+    #: which keeps uploads working when the embedding provider is unavailable.
+    ingest_embed_chunks: bool = Field(default=True, alias="INGEST_EMBED_CHUNKS")
+    #: Host:port of a ClamAV daemon. Empty disables the socket scan; the
+    #: built-in EICAR check still runs.
+    clamav_host: str = Field(default="", alias="CLAMAV_HOST")
+    clamav_port: int = Field(default=3310, alias="CLAMAV_PORT")
+
+    # ------------------------------------------------------------------
+    # Access control
+    # ------------------------------------------------------------------
+    #: Enables the development principal resolver, which trusts the
+    #: ``X-User-Email`` header and auto-provisions the user. This is NOT
+    #: authentication — anyone can claim any email. It exists so endpoints that
+    #: need an owner (uploads, workflows) are testable before JWT lands, and it
+    #: MUST be disabled in any deployment reachable by untrusted clients.
+    dev_auth_enabled: bool = Field(default=True, alias="DEV_AUTH_ENABLED")
+    #: Email used when a request carries no ``X-User-Email`` header.
+    dev_user_email: str = Field(default="dev@nexusflow.local", alias="DEV_USER_EMAIL")
+
+    # ------------------------------------------------------------------
     # Nebius Token Factory
     # ------------------------------------------------------------------
     nebius_api_key: SecretStr = Field(default=SecretStr(""), alias="NEBIUS_API_KEY")
@@ -169,7 +220,12 @@ class Settings(BaseSettings):
     # ------------------------------------------------------------------
     # Validators
     # ------------------------------------------------------------------
-    @field_validator("cors_origins", "model_allowlist", mode="before")
+    @field_validator(
+        "cors_origins",
+        "model_allowlist",
+        "upload_allowed_extensions",
+        mode="before",
+    )
     @classmethod
     def _split_csv_or_json(cls, value: Any) -> Any:
         """Accept both JSON arrays and plain comma-separated lists."""

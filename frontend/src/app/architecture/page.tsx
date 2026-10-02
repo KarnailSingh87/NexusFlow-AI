@@ -26,6 +26,9 @@ const DIAGRAM = `
   │POST /api/v1/chat/completions/stream   SSE passthrough                    │
   │POST /api/v1/chat/embeddings      vector embeddings                       │
   │                                                                          │
+  │POST /api/v1/documents/upload     PDF · DOCX · TXT · CSV                  │
+  │GET  /api/v1/documents/{id}       metadata + chunks                       │
+  │                                                                          │
   │app/services/nebius/client.py                                             │
   │  Bearer auth · jittered retry · 429/5xx backoff                          │
   │  key never logged                                                        │
@@ -33,6 +36,10 @@ const DIAGRAM = `
   │app/services/ai_service.py                                                │
   │  task → Nemotron route (Nano · Lightning · Super · Ultra)                │
   │  JSON mode: request + verify + repair                                    │
+  │                                                                          │
+  │app/services/documents/                                                   │
+  │  magic-byte validation · EICAR + optional ClamAV                         │
+  │  extract → semantic chunk → embed → store                                │
   │                                                                          │
   │               ┌──────────────────────────────────────────────────────┐   │
   │               │  PostgreSQL 17   SQLAlchemy 2.0 async · asyncpg      │   │

@@ -3,6 +3,10 @@
 # Install with: pip install -r requirements.txt -r requirements-dev.txt
 # ---------------------------------------------------------------------------
 
+# Async SQLite driver: lets the ingestion tests exercise real HTTP endpoints
+# against a real (in-memory) database instead of mocking the session.
+aiosqlite==0.22.0
+
 pytest==9.1.1
 pytest-asyncio==1.4.0
 ruff==0.16.10

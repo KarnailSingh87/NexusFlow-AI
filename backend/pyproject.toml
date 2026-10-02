@@ -65,7 +65,10 @@ ignore = [
 ]
 
 [tool.ruff.lint.per-file-ignores]
-"tests/**" = ["S", "D"]
+# ASYNC240: async tests legitimately assert on the filesystem (a stored blob
+# exists, a staging dir is empty). The rule stays enforced in app code, where
+# blocking the event loop actually matters.
+"tests/**" = ["S", "D", "ASYNC240"]
 # Pydantic models and SQLAlchemy mappers are self-describing field lists;
 # a class-level docstring per schema adds noise, not information.
 "app/schemas/**" = ["D101"]

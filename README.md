@@ -134,6 +134,9 @@ The full request path from browser to GPU, and back.
   │POST /api/v1/chat/completions/stream   SSE passthrough                    │
   │POST /api/v1/chat/embeddings      vector embeddings                       │
   │                                                                          │
+  │POST /api/v1/documents/upload     PDF · DOCX · TXT · CSV                  │
+  │GET  /api/v1/documents/{id}       metadata + chunks                       │
+  │                                                                          │
   │app/services/nebius/client.py                                             │
   │  Bearer auth · jittered retry · 429/5xx backoff                          │
   │  key never logged                                                        │
@@ -141,6 +144,10 @@ The full request path from browser to GPU, and back.
   │app/services/ai_service.py                                                │
   │  task → Nemotron route (Nano · Lightning · Super · Ultra)                │
   │  JSON mode: request + verify + repair                                    │
+  │                                                                          │
+  │app/services/documents/                                                   │
+  │  magic-byte validation · EICAR + optional ClamAV                         │
+  │  extract → semantic chunk → embed → store                                │
   │                                                                          │
   │               ┌──────────────────────────────────────────────────────┐   │
   │               │  PostgreSQL 17   SQLAlchemy 2.0 async · asyncpg      │   │
@@ -249,13 +256,20 @@ nexusflow/
 │       ├── schemas/           request/response contracts
 │       ├── services/
 │       │   ├── ai_service.py   task → Nemotron model routing, JSON-mode contract
+│       │   ├── documents/      ingestion engine
+│       │   │   ├── validation.py  magic-byte sniffing, filename sanitisation
+│       │   │   ├── scanning.py    EICAR + optional ClamAV, INSTREAM protocol
+│       │   │   ├── extractors.py  PDF · DOCX · TXT · CSV text extraction
+│       │   │   ├── chunking.py    semantic chunking with overlap + offsets
+│       │   │   └── pipeline.py    stage → validate → screen → chunk → embed
 │       │   └── nebius/
 │       │       ├── client.py  async Token Factory client (retry, SSE, embed)
 │       │       └── registry.py curated Nemotron catalogue
 │       └── api/
-│           ├── deps.py        DI wiring
-│           └── v1/endpoints/  health · models · chat
-│   └── tests/                 pytest suite, no network or database required
+│           ├── deps.py        DI wiring (settings, session, provider, principal)
+│           └── v1/endpoints/  health · models · chat · documents
+│   └── tests/                 pytest suite; provider traffic is mocked, and the
+│                              ingestion tests use a real in-memory SQLite DB
 │
 └── frontend/                  ← Next.js 16 App Router
     ├── Dockerfile             3-stage standalone build
@@ -483,6 +497,27 @@ injects an explicit variable list rather than mounting `.env`. The Compose
 block and `Settings` are covered by tests so a new knob cannot be added to one
 and silently dropped from the other.
 
+### Document ingestion
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `UPLOAD_MAX_BYTES` | `26214400` | Hard ceiling per upload (25 MiB). Enforced *while streaming*, so an oversized body is refused after one block instead of after 25 MiB of disk writes. |
+| `UPLOAD_STORAGE_DIR` | platform temp dir | Where original bytes are written. Override in production; the container default is the `uploads` volume at `/data/uploads`. |
+| `UPLOAD_ALLOWED_EXTENSIONS` | `pdf,docx,txt,csv` | Extensions this deployment accepts. Only a fast rejection path — the real gate is magic-byte sniffing. |
+| `UPLOAD_REQUIRE_TEXT` | `true` | Reject uploads that yield no extractable text, such as scanned images or a header-only CSV. |
+| `INGEST_CHUNK_SIZE` | `1200` | Target characters per chunk (~300 tokens). |
+| `INGEST_CHUNK_OVERLAP` | `200` | Characters of trailing context repeated into the next chunk, so a fact spanning a boundary stays retrievable from both sides. |
+| `INGEST_MAX_CHUNKS` | `2000` | Cap on chunks per document, bounding embedding spend on a single upload. Truncation is recorded in the final chunk's metadata, never silent. |
+| `INGEST_EMBED_CHUNKS` | `true` | Vectorise during ingestion. With this off, chunks are stored as raw text only and uploads keep working while the embedding provider is down. |
+| `CLAMAV_HOST` / `CLAMAV_PORT` | `""` / `3310` | Optional ClamAV daemon. Empty enables only the built-in EICAR check. |
+
+### Access control (development only)
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `DEV_AUTH_ENABLED` | `true` | Enables the `X-User-Email` development principal. **This is not authentication.** |
+| `DEV_USER_EMAIL` | `dev@nexusflow.local` | Identity used when a request carries no `X-User-Email` header. |
+
 ### Production safety rails
 
 Setting `APP_ENV=production` makes `backend/app/core/config.py` **refuse to
@@ -601,6 +636,87 @@ data: [DONE]
 Frames are proxied verbatim from Token Factory, so any OpenAI-compatible client
 works against this gateway.
 
+### Document ingestion
+
+`POST /api/v1/documents/upload` accepts one multipart file in PDF, DOCX, TXT, or
+CSV and returns its stored chunks. The pipeline is
+`stage → validate → screen → extract → chunk → embed → persist`, and each stage
+is independently testable.
+
+```bash
+curl -X POST http://localhost:8000/api/v1/documents/upload \
+  -H 'X-User-Email: alice@example.com' \
+  -F 'file=@quarterly-report.pdf'
+```
+
+```json
+{
+  "id": "0f8c1d2e-...",
+  "filename": "quarterly-report.pdf",
+  "format": "pdf",
+  "status": "ready",
+  "page_count": 12,
+  "chunk_count": 18,
+  "token_count": 5410,
+  "embedding_model": "Qwen/Qwen3-Embedding-8B",
+  "embedded": true,
+  "scan_engine": "clamav",
+  "extraction": { "characters": 22140, "pages": 12, "metadata": { "pages_total": 12 } },
+  "warnings": []
+}
+```
+
+**Validation never trusts the client.** Both the `Content-Type` header and the
+filename extension are attacker-controlled, so the format is decided by the
+leading bytes. A `.txt` that is really a PDF, or a `.pdf` that is really a ZIP,
+is rejected with 415 rather than mis-parsed. Filenames are reduced to a safe
+basename and are never used as a path component — the stored name is a server-
+generated UUID.
+
+**Screening is layered, and honest about which layer ran.** An EICAR signature
+check always runs locally. Set `CLAMAV_HOST` to add a ClamAV daemon over its
+`INSTREAM` protocol. With no daemon configured the response reports
+`scan_engine: eicar` and a warning saying so. A daemon that is unreachable
+reports an *error*, never a clean result — a scanner that silently passes
+everything is worse than no scanner.
+
+**Extraction preserves what retrieval needs.** PDF page numbers and character
+offsets survive into each chunk, so a hit can be traced back to page 4 of the
+original. Formats with no real page concept — DOCX, TXT, CSV — report a single
+page rather than inventing one per paragraph, because "page 3 of 4" on a
+three-line document sends readers looking for something that does not exist.
+CSV rows are rendered with their header keys, since a bare value is
+unanswerable out of context, and DOCX tables are flattened row-per-line rather
+than discarded.
+
+**Chunking splits on meaning, not width.** Paragraphs are the primary unit;
+oversized ones split on sentence boundaries, then words, and only then a hard
+cut. Boundaries require whitespace, so `3.14` and `Dr. Chen` stay intact, and
+an abbreviation guard keeps initials together. Every chunk satisfies
+`text[char_start:char_end] == content`, so offsets always index the stored text
+exactly.
+
+**Embedding never blocks ingestion.** If the provider is down, slow, or returns
+the wrong number of vectors, the chunks are still stored with their raw text and
+the document is left in `embedding` status with the reason in `warnings`, ready
+for a retry. Losing vectors is recoverable; losing the document is not.
+
+**Nothing is left behind on failure.** Any stage that raises removes the staged
+file, the promoted file, and the database row — a rejected upload leaves no
+bytes on the storage volume.
+
+Other endpoints: `GET /api/v1/documents` (yours only), 
+`GET /api/v1/documents/{id}` (metadata + chunks), 
+`GET /api/v1/documents/{id}/chunks`, 
+`DELETE /api/v1/documents/{id}`. A document belonging to another user is
+reported as **404, not 403** — revealing that an ID exists is itself a leak.
+
+> Vectors are stored as JSON float lists rather than a native `pgvector` column
+> so the same schema runs on SQLite in tests and Postgres in production.
+> Cosine-similarity search over `document_chunks.embedding` is therefore an
+> application-side scan today; moving to `pgvector` is a migration, not a
+> redesign, when the corpus outgrows it.
+
 ### Errors
 
 Every failure uses one shape, with a request ID that also appears in the logs:
@@ -689,14 +805,27 @@ npm run check          # all three, in order
 - **Non-root containers.** Both images run as UID 1001.
 - **Bounded input.** Prompts are rejected above `LLM_MAX_INPUT_TOKENS`;
   `max_tokens` is clamped to `LLM_MAX_MAX_TOKENS`; `MODEL_ALLOWLIST` limits
-  which model IDs can ever be invoked.
+  which model IDs can ever be invoked. Uploads are capped at `UPLOAD_MAX_BYTES`,
+  which is enforced mid-stream rather than after buffering.
+- **Uploads are validated by content.** The stored format comes from magic
+  bytes, never the `Content-Type` header or the extension. Filenames are
+  stripped to a safe basename and never form a path; stored names are
+  server-generated UUIDs, which also prevents collisions.
+- **Malware screening.** An EICAR signature check runs on every upload; set
+  `CLAMAV_HOST` to add a real daemon. The response always names the engine that
+  ran, so coverage is never overstated.
+- **Failed uploads leave no residue.** Staged, promoted, and persisted state are
+  all rolled back, so a rejected file does not linger in the storage volume.
 - **Least-privilege DB.** The `nexusflow` role owns only its own database.
 - **Graceful misconfiguration.** Production refuses to start on placeholder
   secrets or wildcard CORS.
 
 Before deploying publicly, add authentication and per-user authorization — the
 scaffold ships the JWT configuration and password hashing primitives, but no
-login flow yet.
+login flow yet. Until then, `DEV_AUTH_ENABLED=true` (the default) lets any
+client claim any identity through the `X-User-Email` header. Set it to `false`
+in any environment reachable by untrusted clients, and replace
+`app/api/deps.py:get_current_user` with real token verification.
 
 ---
 
