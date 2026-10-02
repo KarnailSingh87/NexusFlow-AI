@@ -76,6 +76,7 @@ TaskType = Literal[
     "code",
     "reason",
     "deep_audit",
+    "plan",
     "embed",
 ]
 
@@ -90,6 +91,7 @@ KNOWN_TASKS: Final[tuple[TaskType, ...]] = (
     "code",
     "reason",
     "deep_audit",
+    "plan",
     "embed",
 )
 
@@ -228,6 +230,16 @@ TASK_ROUTES: Final[Mapping[str, TaskRoute]] = {
         "cost for the reliability an audit trail needs.",
         temperature=0.1,
         max_tokens=8192,
+    ),
+    "plan": TaskRoute(
+        task_type="plan",
+        setting_name="nemotron_frontier_model",
+        tier="frontier",
+        rationale="Multi-step planning quality is the reliability bottleneck of the "
+        "agent loop; Ultra produces plans that decompose goals correctly more "
+        "often than the cheaper tiers, so the loop makes fewer wasted steps.",
+        temperature=0.2,
+        max_tokens=4096,
     ),
     "embed": TaskRoute(
         task_type="embed",

@@ -198,13 +198,22 @@ def create_app() -> FastAPI:
         request: Request, exc: RequestValidationError
     ) -> JSONResponse:
         request_id = getattr(request.state, "request_id", None)
+        def _serialize(detail):
+            # Convert non-serializable values (e.g., exception instances in ctx)
+            try:
+                import json
+                json.dumps(detail)
+                return detail
+            except Exception:
+                import json as _json
+                return _json.loads(_json.dumps(detail, default=str))
         return JSONResponse(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             content={
                 "error": {
                     "code": "ValidationError",
                     "message": "Request payload failed validation.",
-                    "detail": exc.errors(),
+                    "detail": _serialize(exc.errors()),
                 },
                 "request_id": request_id,
             },

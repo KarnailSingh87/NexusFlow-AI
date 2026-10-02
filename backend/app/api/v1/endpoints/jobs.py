@@ -225,6 +225,7 @@ async def cancel_job(job_id: uuid.UUID, session: DbSession, user: CurrentUser) -
     job = await session.get(BackgroundJob, job_id)
     if job is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Job not found.")
+    await session.refresh(job)
     logger.info("cancel requested for job %s (was %s)", job.id, job.state)
     return JobStatus.from_row(job)
 

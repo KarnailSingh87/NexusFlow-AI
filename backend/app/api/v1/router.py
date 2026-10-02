@@ -7,12 +7,13 @@ knowing the API version prefix.
 
 from fastapi import APIRouter
 
-from app.api.v1.endpoints import chat, documents, jobs, models
+from app.api.v1.endpoints import agent, chat, documents, jobs, models
 
 api_router = APIRouter()
 api_router.include_router(models.router)
 api_router.include_router(chat.router)
 api_router.include_router(documents.router)
 api_router.include_router(jobs.router)
+api_router.include_router(agent.router)
 
 __all__ = ["api_router"]
